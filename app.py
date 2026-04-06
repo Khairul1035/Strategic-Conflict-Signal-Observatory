@@ -69,6 +69,8 @@ if not country_df.empty:
 **Epistemic note:** Users should separate verified reporting from narrative amplification and avoid treating contested claims as established fact.
 
 **For educational and analytical purposes only.**
+
+# test commit
 """
     st.markdown(memo)
 else:

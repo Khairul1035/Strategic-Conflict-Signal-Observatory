@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime, timezone
 from streamlit_autorefresh import st_autorefresh
 
@@ -8,7 +9,7 @@ from streamlit_autorefresh import st_autorefresh
 # PAGE CONFIG
 # --------------------------------------------------
 st.set_page_config(
-    page_title="Strategic Signal Observatory v3.1",
+    page_title="Strategic Signal Observatory v3.2",
     layout="wide"
 )
 
@@ -22,7 +23,7 @@ st.markdown("""
     }
 
     .block-container {
-        padding-top: 1.2rem;
+        padding-top: 1.1rem;
         padding-bottom: 2rem;
     }
 
@@ -41,7 +42,7 @@ st.markdown("""
     }
 
     .brief-title {
-        font-size: 0.83rem;
+        font-size: 0.82rem;
         color: #6b7280;
         margin-bottom: 0.25rem;
         text-transform: uppercase;
@@ -50,7 +51,7 @@ st.markdown("""
     }
 
     .brief-value {
-        font-size: 1.35rem;
+        font-size: 1.3rem;
         font-weight: 700;
         color: #111827;
     }
@@ -58,12 +59,12 @@ st.markdown("""
     .researcher-line {
         font-size: 0.95rem;
         color: #374151;
-        margin-top: -0.4rem;
-        margin-bottom: 0.8rem;
+        margin-top: -0.35rem;
+        margin-bottom: 0.7rem;
     }
 
     .small-label {
-        font-size: 0.82rem;
+        font-size: 0.8rem;
         color: #6b7280;
         font-weight: 600;
         text-transform: uppercase;
@@ -71,7 +72,7 @@ st.markdown("""
     }
 
     .value-box {
-        font-size: 1rem;
+        font-size: 0.98rem;
         color: #111827;
         font-weight: 600;
         margin-top: 0.25rem;
@@ -80,7 +81,37 @@ st.markdown("""
     .meta-line {
         font-size: 0.9rem;
         color: #4b5563;
-        margin-bottom: 0.35rem;
+        margin-bottom: 0.25rem;
+    }
+
+    .alert-high {
+        background: #ffebee;
+        color: #8e0000;
+        padding: 0.9rem 1rem;
+        border-radius: 10px;
+        border-left: 6px solid #c62828;
+        margin-bottom: 0.8rem;
+        font-weight: 600;
+    }
+
+    .alert-medium {
+        background: #fff8e1;
+        color: #8d6e00;
+        padding: 0.9rem 1rem;
+        border-radius: 10px;
+        border-left: 6px solid #f9a825;
+        margin-bottom: 0.8rem;
+        font-weight: 600;
+    }
+
+    .alert-low {
+        background: #e8f5e9;
+        color: #1b5e20;
+        padding: 0.9rem 1rem;
+        border-radius: 10px;
+        border-left: 6px solid #2e7d32;
+        margin-bottom: 0.8rem;
+        font-weight: 600;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -105,7 +136,6 @@ def parse_dates(df):
     if "date" in df.columns:
         df["date_parsed"] = pd.to_datetime(df["date"], errors="coerce", dayfirst=True)
 
-    # If timestamp_utc missing or null, derive from date
     if "timestamp_utc" not in df.columns:
         df["timestamp_utc"] = pd.NaT
 
@@ -114,8 +144,7 @@ def parse_dates(df):
             pd.to_datetime(df["date_parsed"], errors="coerce", utc=True)
         )
 
-    df = df.sort_values("timestamp_utc", ascending=True).reset_index(drop=True)
-    return df
+    return df.sort_values("timestamp_utc", ascending=True).reset_index(drop=True)
 
 @st.cache_data(ttl=300)
 def load_data(remote_csv_url: str | None = None):
@@ -134,6 +163,30 @@ def load_data(remote_csv_url: str | None = None):
     local_df = parse_dates(local_df)
     return local_df, source_used
 
+def apply_playback_window(df, enable_playback=True):
+    if df.empty or "timestamp_utc" not in df.columns or df["timestamp_utc"].isna().all():
+        return df, None
+
+    df = df.sort_values("timestamp_utc").reset_index(drop=True)
+
+    if not enable_playback:
+        latest_time = df["timestamp_utc"].max()
+        return df, latest_time
+
+    unique_times = sorted(df["timestamp_utc"].dropna().unique())
+    if not unique_times:
+        return df, None
+
+    step = int(datetime.now(timezone.utc).timestamp() // 15)
+    idx = step % len(unique_times)
+    live_cutoff = unique_times[idx]
+
+    visible_df = df[df["timestamp_utc"] <= live_cutoff].copy()
+    return visible_df, live_cutoff
+
+# --------------------------------------------------
+# ANALYTICAL FUNCTIONS
+# --------------------------------------------------
 def classify_pattern(verified_count, contested_count):
     if verified_count > contested_count:
         return "Verified signals dominate. The environment appears more structured and visible than speculative."
@@ -296,30 +349,155 @@ def anomaly_flag(high_risk_count, contested_count):
         return "Potential anomaly: simultaneous rise in risk and contested signals"
     return "No strong anomaly detected"
 
-def apply_playback_window(df, enable_playback=True):
-    """
-    Makes the dashboard look alive 24/7 even on synthetic/static data.
-    It reveals records progressively based on current UTC time.
-    """
-    if df.empty or "timestamp_utc" not in df.columns or df["timestamp_utc"].isna().all():
-        return df, None
+# --------------------------------------------------
+# NEW V3.2 FUNCTIONS
+# --------------------------------------------------
+def source_reliability_score(country_df):
+    if country_df.empty or "source_type" not in country_df.columns:
+        return 0.5, "Source metadata insufficient"
 
-    df = df.sort_values("timestamp_utc").reset_index(drop=True)
+    weight_map = {
+        "Official": 0.90,
+        "Official Release": 0.90,
+        "Government": 0.90,
+        "Think Tank": 0.75,
+        "Think Tank Note": 0.75,
+        "OSINT": 0.65,
+        "OSINT Report": 0.65,
+        "Media": 0.55,
+        "Media Report": 0.55,
+        "Media Claim": 0.45,
+        "Social": 0.30,
+        "Social Media": 0.30
+    }
 
-    if not enable_playback:
-        latest_time = df["timestamp_utc"].max()
-        return df, latest_time
+    scores = []
+    for val in country_df["source_type"].fillna("Unknown").astype(str):
+        score = 0.50
+        for k, v in weight_map.items():
+            if k.lower() in val.lower():
+                score = v
+                break
+        scores.append(score)
 
-    unique_times = sorted(df["timestamp_utc"].dropna().unique())
-    if not unique_times:
-        return df, None
+    avg_score = round(sum(scores) / len(scores), 2) if scores else 0.50
 
-    step = int(datetime.now(timezone.utc).timestamp() // 15)  # move every 15 sec
-    idx = step % len(unique_times)
-    live_cutoff = unique_times[idx]
+    if avg_score >= 0.75:
+        label = "Strong source reliability"
+    elif avg_score >= 0.5:
+        label = "Moderate source reliability"
+    else:
+        label = "Weak source reliability"
+    return avg_score, label
 
-    visible_df = df[df["timestamp_utc"] <= live_cutoff].copy()
-    return visible_df, live_cutoff
+def build_alerts(country_df, high_risk_count, contested_count, signal_quality, narrative_pressure):
+    alerts = []
+
+    if high_risk_count >= 3:
+        alerts.append(("high", "High-risk concentration detected. Market, policy, or reputational spillover may intensify."))
+
+    if contested_count >= 3 and signal_quality < 0.5:
+        alerts.append(("medium", "Contested signal cluster detected under mixed/low trust conditions."))
+
+    if narrative_pressure >= 0.6:
+        alerts.append(("medium", "Narrative pressure is elevated. Perception may be moving faster than corroborated evidence."))
+
+    if not alerts:
+        alerts.append(("low", "No urgent alert condition detected under the current filtered view."))
+
+    return alerts
+
+def build_priority_target_table(filtered_df):
+    temp = filtered_df.copy()
+
+    if temp.empty:
+        return temp
+
+    if "confidence_score" not in temp.columns:
+        temp["confidence_score"] = 0.5
+
+    temp["confidence_score"] = pd.to_numeric(temp["confidence_score"], errors="coerce").fillna(0.5)
+
+    risk_weight = temp["business_risk"].map({
+        "High": 3,
+        "Medium": 2,
+        "Low": 1
+    }).fillna(1)
+
+    signal_weight = temp["signal_level"].map({
+        "Verified": 2,
+        "Contested": 1
+    }).fillna(1)
+
+    temp["priority_score"] = (
+        risk_weight * 0.45
+        + signal_weight * 0.20
+        + temp["confidence_score"] * 2 * 0.20
+        + temp.get("market_sensitivity", pd.Series([0]*len(temp))).fillna(0) * 0.15
+    ).round(2)
+
+    cols = [c for c in [
+        "timestamp_utc", "country", "actor", "category",
+        "signal_level", "business_risk", "source_type",
+        "confidence_score", "priority_score", "summary"
+    ] if c in temp.columns]
+
+    temp = temp.sort_values(["priority_score", "timestamp_utc"], ascending=[False, False])
+    return temp[cols].head(10)
+
+def animated_risk_monitor_figure(risk_score, narrative_score, source_score):
+    fig = go.Figure()
+
+    fig.add_trace(go.Indicator(
+        mode="gauge+number",
+        value=risk_score * 100,
+        title={"text": "Risk Monitor"},
+        gauge={
+            "axis": {"range": [0, 100]},
+            "bar": {"thickness": 0.25},
+            "steps": [
+                {"range": [0, 35], "color": "#e8f5e9"},
+                {"range": [35, 70], "color": "#fff8e1"},
+                {"range": [70, 100], "color": "#ffebee"}
+            ]
+        },
+        domain={"x": [0.0, 0.3], "y": [0, 1]}
+    ))
+
+    fig.add_trace(go.Indicator(
+        mode="gauge+number",
+        value=narrative_score * 100,
+        title={"text": "Narrative Pressure"},
+        gauge={
+            "axis": {"range": [0, 100]},
+            "bar": {"thickness": 0.25},
+            "steps": [
+                {"range": [0, 35], "color": "#e8f5e9"},
+                {"range": [35, 70], "color": "#fff8e1"},
+                {"range": [70, 100], "color": "#ffebee"}
+            ]
+        },
+        domain={"x": [0.35, 0.65], "y": [0, 1]}
+    ))
+
+    fig.add_trace(go.Indicator(
+        mode="gauge+number",
+        value=source_score * 100,
+        title={"text": "Source Reliability"},
+        gauge={
+            "axis": {"range": [0, 100]},
+            "bar": {"thickness": 0.25},
+            "steps": [
+                {"range": [0, 35], "color": "#ffebee"},
+                {"range": [35, 70], "color": "#fff8e1"},
+                {"range": [70, 100], "color": "#e8f5e9"}
+            ]
+        },
+        domain={"x": [0.70, 1.0], "y": [0, 1]}
+    ))
+
+    fig.update_layout(height=320, margin=dict(l=20, r=20, t=40, b=20))
+    return fig
 
 # --------------------------------------------------
 # SIDEBAR / CONTROLS
@@ -336,8 +514,7 @@ with st.sidebar:
     live_mode = st.toggle("Enable 24/7 playback mode", value=True)
     refresh_seconds = st.selectbox("Auto-refresh interval (seconds)", [5, 10, 15, 30, 60], index=2)
 
-    # Auto refresh
-    st_autorefresh(interval=refresh_seconds * 1000, key="live_refresh")
+    st_autorefresh(interval=refresh_seconds * 1000, key="live_refresh_v32")
 
     if st.button("Refresh data now"):
         st.cache_data.clear()
@@ -381,7 +558,7 @@ country_df = filtered[filtered["country"] == selected_country].copy()
 # --------------------------------------------------
 # HEADER
 # --------------------------------------------------
-st.title("Strategic Signal Observatory v3.1")
+st.title("Strategic Signal Observatory v3.2")
 st.markdown(
     '<div class="researcher-line"><strong>Lead Researcher:</strong> MOHD KHAIRUL RIDHUAN BIN MOHD FADZIL</div>',
     unsafe_allow_html=True
@@ -430,6 +607,33 @@ business_imp, policy_imp, regional_imp = decision_implication(high_risk_count, c
 why_now_text = why_now_analysis(country_df)
 momentum_text = signal_momentum(country_df)
 anomaly_text = anomaly_flag(high_risk_count, contested_count)
+
+source_score, source_label = source_reliability_score(country_df)
+alerts = build_alerts(country_df, high_risk_count, contested_count, sq_score, np_score)
+priority_table = build_priority_target_table(filtered)
+
+# risk monitor composite
+risk_monitor_score = round(
+    min(
+        1.0,
+        (high_risk_count / max(event_count, 1)) * 0.45
+        + np_score * 0.30
+        + (1 - sq_score) * 0.25
+    ),
+    2
+)
+
+# --------------------------------------------------
+# ALERT SYSTEM
+# --------------------------------------------------
+st.subheader("Alert System")
+for level, text in alerts:
+    if level == "high":
+        st.markdown(f'<div class="alert-high">HIGH ALERT — {text}</div>', unsafe_allow_html=True)
+    elif level == "medium":
+        st.markdown(f'<div class="alert-medium">MEDIUM ALERT — {text}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="alert-low">LOW ALERT — {text}</div>', unsafe_allow_html=True)
 
 # --------------------------------------------------
 # EXECUTIVE BRIEF
@@ -500,7 +704,15 @@ with i3:
     st.metric("Dominant Actor", actor_dom)
 
 with i4:
-    st.metric("Signal Momentum", momentum_text)
+    st.metric("Source Reliability", source_score)
+    st.caption(source_label)
+
+# --------------------------------------------------
+# ANIMATED RISK MONITOR
+# --------------------------------------------------
+st.subheader("Animated Risk Monitor")
+risk_fig = animated_risk_monitor_figure(risk_monitor_score, np_score, source_score)
+st.plotly_chart(risk_fig, use_container_width=True)
 
 # --------------------------------------------------
 # COUNTRY INTELLIGENCE CARD
@@ -565,6 +777,7 @@ with left_panel:
     st.write(f"- **Business:** {business_imp}")
     st.write(f"- **Policy:** {policy_imp}")
     st.write(f"- **Regional:** {regional_imp}")
+    st.write(f"- **Signal momentum:** {momentum_text}")
 
 with right_panel:
     st.subheader("Scenario Panel")
@@ -572,6 +785,15 @@ with right_panel:
         st.write(f"**{scenario_name} — {prob}%**")
     st.write("")
     st.write(f"**Most likely under current data:** {likely_scenario}")
+
+# --------------------------------------------------
+# PRIORITY TARGET TABLE
+# --------------------------------------------------
+st.subheader("Priority Target Table")
+if not priority_table.empty:
+    st.dataframe(priority_table, use_container_width=True)
+else:
+    st.info("No priority-ranked records available under the current filtered view.")
 
 # --------------------------------------------------
 # EVENT TABLE
@@ -602,7 +824,6 @@ with chart2:
     fig2 = px.bar(narrative_counts, x="narrative_type", y="count")
     st.plotly_chart(fig2, use_container_width=True)
 
-# NEW: live timeline chart
 st.subheader("Live Feed Timeline")
 timeline_df = (
     country_df.dropna(subset=["timestamp_utc"])
@@ -652,6 +873,8 @@ memo = f"""
 **Signal quality:** {sq_score} ({sq_label}; {confidence_text})
 
 **Narrative pressure:** {np_score} ({np_label})
+
+**Source reliability:** {source_score} ({source_label})
 
 **Signal momentum:** {momentum_text}
 

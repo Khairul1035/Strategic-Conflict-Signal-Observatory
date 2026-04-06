@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from datetime import datetime, timezone
 
 # --------------------------------------------------
 # PAGE CONFIG
 # --------------------------------------------------
 st.set_page_config(
-    page_title="Strategic Signal Observatory v2.1",
+    page_title="Strategic Signal Observatory v3.0",
     layout="wide"
 )
 
@@ -20,7 +21,7 @@ st.markdown("""
     }
 
     .block-container {
-        padding-top: 2rem;
+        padding-top: 1.5rem;
         padding-bottom: 2rem;
     }
 
@@ -39,27 +40,25 @@ st.markdown("""
     }
 
     .brief-title {
-        font-size: 0.85rem;
+        font-size: 0.83rem;
         color: #6b7280;
-        margin-bottom: 0.3rem;
+        margin-bottom: 0.25rem;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        font-weight: 600;
     }
 
     .brief-value {
-        font-size: 1.4rem;
+        font-size: 1.35rem;
         font-weight: 700;
         color: #111827;
-    }
-
-    .section-note {
-        color: #6b7280;
-        font-size: 0.95rem;
     }
 
     .researcher-line {
         font-size: 0.95rem;
         color: #374151;
         margin-top: -0.4rem;
-        margin-bottom: 1rem;
+        margin-bottom: 0.8rem;
     }
 
     .small-label {
@@ -76,17 +75,73 @@ st.markdown("""
         font-weight: 600;
         margin-top: 0.25rem;
     }
+
+    .meta-line {
+        font-size: 0.9rem;
+        color: #4b5563;
+        margin-bottom: 0.35rem;
+    }
+
+    .tag-ok {
+        display: inline-block;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        background: #e8f5e9;
+        color: #1b5e20;
+        font-size: 0.8rem;
+        font-weight: 700;
+        margin-right: 0.4rem;
+    }
+
+    .tag-warn {
+        display: inline-block;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        background: #fff8e1;
+        color: #8d6e00;
+        font-size: 0.8rem;
+        font-weight: 700;
+        margin-right: 0.4rem;
+    }
+
+    .tag-risk {
+        display: inline-block;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        background: #ffebee;
+        color: #b71c1c;
+        font-size: 0.8rem;
+        font-weight: 700;
+        margin-right: 0.4rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # --------------------------------------------------
-# LOAD DATA
+# DATA LOADING
 # --------------------------------------------------
-@st.cache_data
-def load_data():
-    return pd.read_csv("data/events_sample.csv")
+LOCAL_DATA_PATH = "data/events_sample.csv"
 
-df = load_data()
+def safe_ratio(num, den):
+    return round(num / den, 2) if den else 0.0
+
+@st.cache_data(ttl=300)
+def load_data(remote_csv_url: str | None = None):
+    """
+    Try remote CSV first for near-real-time refresh.
+    Fall back to local CSV if remote source fails.
+    """
+    source_used = "Local backup CSV"
+    if remote_csv_url:
+        try:
+            remote_df = pd.read_csv(remote_csv_url)
+            source_used = "Remote CSV feed"
+            return remote_df, source_used
+        except Exception:
+            pass
+
+    local_df = pd.read_csv(LOCAL_DATA_PATH)
+    return local_df, source_used
 
 # --------------------------------------------------
 # HELPER FUNCTIONS
@@ -109,7 +164,7 @@ def get_risk_label(high_risk_count, contested_count):
 
 def watch_next_message(high_risk_count, contested_count, verified_count):
     if high_risk_count >= 1 and contested_count >= 1:
-        return "Monitor diplomatic signalling, economic sensitivity, and narrative amplification over the next cycle."
+        return "Monitor diplomatic signalling, market-sensitive movements, and narrative amplification over the next cycle."
     elif high_risk_count >= 1 and verified_count >= 1:
         return "Monitor market-sensitive developments, official signalling, and possible spillover implications."
     elif contested_count >= 1:
@@ -125,20 +180,6 @@ def asean_projection(country):
         return "Likely ASEAN posture: low direct involvement, with concern focused on regional spillover and stability."
     return "Likely ASEAN posture: limited direct response under current conditions."
 
-def build_scenario(high_risk_count, contested_count, verified_count):
-    scenario_a = "Scenario A — Controlled Diplomatic Containment"
-    scenario_b = "Scenario B — Narrative Escalation Without Major Structural Shift"
-    scenario_c = "Scenario C — Business-Risk Spillover"
-
-    if high_risk_count >= 1 and verified_count >= 1:
-        likely = scenario_c
-    elif contested_count > verified_count:
-        likely = scenario_b
-    else:
-        likely = scenario_a
-
-    return scenario_a, scenario_b, scenario_c, likely
-
 def dominant_narrative(country_df):
     if country_df.empty:
         return "Insufficient evidence"
@@ -147,21 +188,108 @@ def dominant_narrative(country_df):
         return "Insufficient evidence"
     return str(mode_series.iloc[0])
 
-# --------------------------------------------------
-# HEADER
-# --------------------------------------------------
-st.title("Strategic Signal Observatory v2.1")
-st.markdown(
-    '<div class="researcher-line"><strong>Lead Researcher:</strong> MOHD KHAIRUL RIDHUAN BIN MOHD FADZIL</div>',
-    unsafe_allow_html=True
-)
-st.caption("Conflict interpretation interface for educational and analytical purposes only.")
+def actor_dominance(country_df):
+    if country_df.empty:
+        return "Insufficient evidence"
+    counts = country_df["actor"].value_counts()
+    return str(counts.idxmax())
+
+def signal_quality_index(verified_count, contested_count):
+    total = verified_count + contested_count
+    score = safe_ratio(verified_count, total)
+    if score >= 0.8:
+        label = "High confidence environment"
+    elif score >= 0.4:
+        label = "Mixed confidence environment"
+    else:
+        label = "Low trust environment"
+    return score, label
+
+def narrative_pressure_index(contested_count, total_events):
+    score = safe_ratio(contested_count, total_events)
+    if score >= 0.8:
+        label = "High narrative pressure"
+    elif score >= 0.4:
+        label = "Moderate narrative pressure"
+    else:
+        label = "Low narrative pressure"
+    return score, label
+
+def possible_hidden_intent(verified_count, contested_count, high_risk_count, actor_dom, dominant_narr):
+    """
+    Analytical reading only. Not a factual claim about concealed intent.
+    """
+    if contested_count > verified_count and dominant_narr in ["Media Claim", "Social Media"]:
+        return "Possible analytical reading: perception management, narrative shaping, or ambiguity maintenance."
+    if high_risk_count >= 1 and verified_count >= contested_count:
+        return "Possible analytical reading: strategic signalling tied to market, policy, or reputational sensitivity."
+    if actor_dom == "State" and verified_count > contested_count:
+        return "Possible analytical reading: structured signalling rather than diffuse narrative contestation."
+    return "Possible analytical reading: routine signalling environment with no strong hidden-intent indicator in the visible data."
+
+def missing_but_expected(country_df, verified_count, contested_count):
+    actors_present = set(country_df["actor"].astype(str).tolist())
+    narratives_present = set(country_df["narrative_type"].astype(str).tolist())
+
+    if contested_count > verified_count and "Official Statement" not in narratives_present:
+        return "Missing but expected: official clarification is absent despite contested reporting. This may indicate intentional silence, delay, or incomplete verification."
+    if "State" not in actors_present and len(country_df) > 0:
+        return "Missing but expected: direct state-level signalling is limited in the visible dataset."
+    return "No major missing-but-expected signal stands out under the current filtered view."
+
+def build_scenario_probabilities(high_risk_count, contested_count, verified_count):
+    a = 0.34
+    b = 0.33
+    c = 0.33
+
+    if contested_count > verified_count:
+        b += 0.20
+        a -= 0.10
+        c -= 0.10
+    if high_risk_count >= 1:
+        c += 0.20
+        a -= 0.05
+        b -= 0.15
+    if verified_count > contested_count:
+        a += 0.15
+        b -= 0.10
+        c -= 0.05
+
+    values = [max(a, 0.05), max(b, 0.05), max(c, 0.05)]
+    total = sum(values)
+    probs = [round(v / total * 100, 1) for v in values]
+
+    scenarios = {
+        "Scenario A — Controlled Diplomatic Containment": probs[0],
+        "Scenario B — Narrative Escalation Without Major Structural Shift": probs[1],
+        "Scenario C — Business-Risk Spillover": probs[2]
+    }
+
+    likely = max(scenarios, key=scenarios.get)
+    return scenarios, likely
+
+def decision_implication(high_risk_count, contested_count, verified_count):
+    business = "Elevated market or reputational sensitivity." if high_risk_count >= 1 else "No immediate business-risk spike visible."
+    policy = "Policy rhetoric may become more cautious and verification-driven." if contested_count >= 1 else "Policy posture may remain relatively stable."
+    regional = "Regional actors may hedge verbally while avoiding deep commitment." if (contested_count >= 1 or high_risk_count >= 1) else "Limited regional spillover is visible under current conditions."
+    return business, policy, regional
 
 # --------------------------------------------------
-# SIDEBAR
+# SIDEBAR / CONTROLS
 # --------------------------------------------------
 with st.sidebar:
     st.header("Control Panel")
+
+    remote_csv_url = st.text_input(
+        "Optional remote CSV URL",
+        value="",
+        help="Paste a public CSV URL (e.g., GitHub raw CSV or published Google Sheet CSV). If unavailable, the app will automatically use the local backup CSV."
+    )
+
+    if st.button("Refresh data"):
+        st.cache_data.clear()
+
+    df, source_used = load_data(remote_csv_url)
 
     selected_country = st.selectbox(
         "Select one country for deep analysis",
@@ -181,6 +309,12 @@ with st.sidebar:
     )
 
 # --------------------------------------------------
+# TIMESTAMP
+# --------------------------------------------------
+utc_now = datetime.now(timezone.utc)
+local_now = datetime.now().astimezone()
+
+# --------------------------------------------------
 # FILTER DATA
 # --------------------------------------------------
 filtered = df[
@@ -189,6 +323,25 @@ filtered = df[
 ].copy()
 
 country_df = filtered[filtered["country"] == selected_country].copy()
+
+# --------------------------------------------------
+# HEADER
+# --------------------------------------------------
+st.title("Strategic Signal Observatory v3.0")
+st.markdown(
+    '<div class="researcher-line"><strong>Lead Researcher:</strong> MOHD KHAIRUL RIDHUAN BIN MOHD FADZIL</div>',
+    unsafe_allow_html=True
+)
+st.caption("Conflict interpretation interface for educational and analytical purposes only.")
+
+st.markdown(
+    f"""
+<div class="meta-line"><strong>Data source:</strong> {source_used}</div>
+<div class="meta-line"><strong>UTC fetch time:</strong> {utc_now.strftime("%Y-%m-%d %H:%M:%S %Z")}</div>
+<div class="meta-line"><strong>Local fetch time:</strong> {local_now.strftime("%Y-%m-%d %H:%M:%S %Z")}</div>
+""",
+    unsafe_allow_html=True
+)
 
 if country_df.empty:
     st.warning("No data available for the selected country under the current filters.")
@@ -202,14 +355,21 @@ contested_count = int((country_df["signal_level"] == "Contested").sum())
 high_risk_count = int((country_df["business_risk"] == "High").sum())
 medium_risk_count = int((country_df["business_risk"] == "Medium").sum())
 event_count = int(len(country_df))
+
 risk_label = get_risk_label(high_risk_count, contested_count)
 pattern_text = classify_pattern(verified_count, contested_count)
 watch_next = watch_next_message(high_risk_count, contested_count, verified_count)
 asean_text = asean_projection(selected_country)
 dom_narrative = dominant_narrative(country_df)
-scenario_a, scenario_b, scenario_c, likely_scenario = build_scenario(
-    high_risk_count, contested_count, verified_count
+actor_dom = actor_dominance(country_df)
+sq_score, sq_label = signal_quality_index(verified_count, contested_count)
+np_score, np_label = narrative_pressure_index(contested_count, event_count)
+hidden_intent_text = possible_hidden_intent(
+    verified_count, contested_count, high_risk_count, actor_dom, dom_narrative
 )
+missing_expected_text = missing_but_expected(country_df, verified_count, contested_count)
+scenarios, likely_scenario = build_scenario_probabilities(high_risk_count, contested_count, verified_count)
+business_imp, policy_imp, regional_imp = decision_implication(high_risk_count, contested_count, verified_count)
 
 # --------------------------------------------------
 # EXECUTIVE BRIEF
@@ -261,11 +421,28 @@ st.markdown(
 )
 
 # --------------------------------------------------
+# ANALYTICAL INDICES
+# --------------------------------------------------
+st.subheader("Analytical Indices")
+
+i1, i2, i3 = st.columns(3)
+with i1:
+    st.metric("Signal Quality Index", sq_score)
+    st.caption(sq_label)
+
+with i2:
+    st.metric("Narrative Pressure Index", np_score)
+    st.caption(np_label)
+
+with i3:
+    st.metric("Dominant Actor Weight", actor_dom)
+
+# --------------------------------------------------
 # COUNTRY INTELLIGENCE CARD
 # --------------------------------------------------
 st.subheader("Country Intelligence Card")
 
-c1, c2 = st.columns([1.2, 1])
+c1, c2 = st.columns(2)
 
 with c1:
     st.markdown(f"""
@@ -287,14 +464,14 @@ with c1:
 with c2:
     st.markdown(f"""
     <div class="custom-card">
-        <div class="small-label">What to watch next</div>
-        <div class="value-box">{watch_next}</div>
+        <div class="small-label">Possible hidden intent</div>
+        <div class="value-box">{hidden_intent_text}</div>
         <br>
-        <div class="small-label">Most likely scenario</div>
-        <div class="value-box">{likely_scenario}</div>
+        <div class="small-label">Missing but expected</div>
+        <div class="value-box">{missing_expected_text}</div>
         <br>
         <div class="small-label">Analytical caution</div>
-        <div class="value-box">Interpret visible patterns only. Do not infer hidden intent, classified action, or tactical certainty.</div>
+        <div class="value-box">Interpret visible patterns only. Do not infer hidden intent, classified action, or tactical certainty as fact.</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -320,16 +497,16 @@ with left_panel:
     else:
         st.success("No high-risk structure is visible in the current filtered view.")
 
+    st.markdown("**Decision implications**")
+    st.write(f"- **Business:** {business_imp}")
+    st.write(f"- **Policy:** {policy_imp}")
+    st.write(f"- **Regional:** {regional_imp}")
+
 with right_panel:
     st.subheader("Scenario Panel")
-    st.write(f"**{scenario_a}**")
-    st.write("Trigger: verified diplomatic or official signalling begins to stabilise perception.")
-    st.write("")
-    st.write(f"**{scenario_b}**")
-    st.write("Trigger: contested claims circulate faster than corroborated evidence.")
-    st.write("")
-    st.write(f"**{scenario_c}**")
-    st.write("Trigger: business, energy, or policy sensitivity becomes more visible than the narrative surface.")
+    for scenario_name, prob in scenarios.items():
+        st.write(f"**{scenario_name} — {prob}%**")
+
     st.write("")
     st.write(f"**Most likely under current data:** {likely_scenario}")
 
@@ -397,19 +574,37 @@ memo = f"""
 
 **Signal interpretation:** {pattern_text}
 
+**Signal quality:** {sq_score} ({sq_label})
+
+**Narrative pressure:** {np_score} ({np_label})
+
 **Risk interpretation:** {selected_country} shows {high_risk_count} high-risk indicator(s). This may imply sensitivity in business conditions, policy positioning, diplomatic signalling, or regional confidence.
 
+**Dominant actor:** {actor_dom}
+
 **Dominant narrative form:** {dom_narrative}
+
+**Possible hidden intent (analytical reading only):** {hidden_intent_text}
+
+**Missing but expected:** {missing_expected_text}
 
 **ASEAN outlook:** {asean_text}
 
 **Watch next:** {watch_next}
 
-**Analytical caution:** This dashboard does not infer hidden intent, operational planning, or classified realities. It supports interpretation of visible patterns only.
+**Most likely scenario:** {likely_scenario}
+
+**Decision implications:** Business — {business_imp} Policy — {policy_imp} Regional — {regional_imp}
+
+**Analytical caution:** This dashboard does not infer hidden intent, operational planning, or classified realities as facts. It supports interpretation of visible patterns only.
 
 **Epistemic note:** Users should distinguish between verified reporting, repeated claims, and narrative amplification. Contested reporting should not be treated as established fact without corroboration.
 
 **Lead researcher:** MOHD KHAIRUL RIDHUAN BIN MOHD FADZIL
+
+**UTC fetch time:** {utc_now.strftime("%Y-%m-%d %H:%M:%S %Z")}
+**Local fetch time:** {local_now.strftime("%Y-%m-%d %H:%M:%S %Z")}
+**Data source used:** {source_used}
 
 **For educational and analytical purposes only.**
 """

@@ -2,12 +2,13 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from datetime import datetime, timezone
+from streamlit_autorefresh import st_autorefresh
 
 # --------------------------------------------------
 # PAGE CONFIG
 # --------------------------------------------------
 st.set_page_config(
-    page_title="Strategic Signal Observatory v3.0",
+    page_title="Strategic Signal Observatory v3.1",
     layout="wide"
 )
 
@@ -21,7 +22,7 @@ st.markdown("""
     }
 
     .block-container {
-        padding-top: 1.5rem;
+        padding-top: 1.2rem;
         padding-bottom: 2rem;
     }
 
@@ -81,71 +82,58 @@ st.markdown("""
         color: #4b5563;
         margin-bottom: 0.35rem;
     }
-
-    .tag-ok {
-        display: inline-block;
-        padding: 0.2rem 0.55rem;
-        border-radius: 999px;
-        background: #e8f5e9;
-        color: #1b5e20;
-        font-size: 0.8rem;
-        font-weight: 700;
-        margin-right: 0.4rem;
-    }
-
-    .tag-warn {
-        display: inline-block;
-        padding: 0.2rem 0.55rem;
-        border-radius: 999px;
-        background: #fff8e1;
-        color: #8d6e00;
-        font-size: 0.8rem;
-        font-weight: 700;
-        margin-right: 0.4rem;
-    }
-
-    .tag-risk {
-        display: inline-block;
-        padding: 0.2rem 0.55rem;
-        border-radius: 999px;
-        background: #ffebee;
-        color: #b71c1c;
-        font-size: 0.8rem;
-        font-weight: 700;
-        margin-right: 0.4rem;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 # --------------------------------------------------
-# DATA LOADING
+# CONSTANTS
 # --------------------------------------------------
 LOCAL_DATA_PATH = "data/events_sample.csv"
 
+# --------------------------------------------------
+# UTILITIES
+# --------------------------------------------------
 def safe_ratio(num, den):
     return round(num / den, 2) if den else 0.0
 
+def parse_dates(df):
+    df = df.copy()
+
+    if "timestamp_utc" in df.columns:
+        df["timestamp_utc"] = pd.to_datetime(df["timestamp_utc"], errors="coerce", utc=True)
+
+    if "date" in df.columns:
+        df["date_parsed"] = pd.to_datetime(df["date"], errors="coerce", dayfirst=True)
+
+    # If timestamp_utc missing or null, derive from date
+    if "timestamp_utc" not in df.columns:
+        df["timestamp_utc"] = pd.NaT
+
+    if "date_parsed" in df.columns:
+        df["timestamp_utc"] = df["timestamp_utc"].fillna(
+            pd.to_datetime(df["date_parsed"], errors="coerce", utc=True)
+        )
+
+    df = df.sort_values("timestamp_utc", ascending=True).reset_index(drop=True)
+    return df
+
 @st.cache_data(ttl=300)
 def load_data(remote_csv_url: str | None = None):
-    """
-    Try remote CSV first for near-real-time refresh.
-    Fall back to local CSV if remote source fails.
-    """
     source_used = "Local backup CSV"
+
     if remote_csv_url:
         try:
             remote_df = pd.read_csv(remote_csv_url)
+            remote_df = parse_dates(remote_df)
             source_used = "Remote CSV feed"
             return remote_df, source_used
         except Exception:
             pass
 
     local_df = pd.read_csv(LOCAL_DATA_PATH)
+    local_df = parse_dates(local_df)
     return local_df, source_used
 
-# --------------------------------------------------
-# HELPER FUNCTIONS
-# --------------------------------------------------
 def classify_pattern(verified_count, contested_count):
     if verified_count > contested_count:
         return "Verified signals dominate. The environment appears more structured and visible than speculative."
@@ -184,9 +172,7 @@ def dominant_narrative(country_df):
     if country_df.empty:
         return "Insufficient evidence"
     mode_series = country_df["narrative_type"].mode()
-    if len(mode_series) == 0:
-        return "Insufficient evidence"
-    return str(mode_series.iloc[0])
+    return str(mode_series.iloc[0]) if len(mode_series) > 0 else "Insufficient evidence"
 
 def actor_dominance(country_df):
     if country_df.empty:
@@ -205,6 +191,13 @@ def signal_quality_index(verified_count, contested_count):
         label = "Low trust environment"
     return score, label
 
+def intelligence_confidence(signal_quality):
+    if signal_quality >= 0.75:
+        return "High confidence"
+    elif signal_quality >= 0.4:
+        return "Moderate confidence"
+    return "Low confidence"
+
 def narrative_pressure_index(contested_count, total_events):
     score = safe_ratio(contested_count, total_events)
     if score >= 0.8:
@@ -215,24 +208,19 @@ def narrative_pressure_index(contested_count, total_events):
         label = "Low narrative pressure"
     return score, label
 
-def possible_hidden_intent(verified_count, contested_count, high_risk_count, actor_dom, dominant_narr):
-    """
-    Analytical reading only. Not a factual claim about concealed intent.
-    """
+def possible_hidden_intent_advanced(verified_count, contested_count, actor_dom, dominant_narr):
     if contested_count > verified_count and dominant_narr in ["Media Claim", "Social Media"]:
-        return "Possible analytical reading: perception management, narrative shaping, or ambiguity maintenance."
-    if high_risk_count >= 1 and verified_count >= contested_count:
-        return "Possible analytical reading: strategic signalling tied to market, policy, or reputational sensitivity."
+        return "Possible analytical reading: narrative competition environment where perception shaping may be more active than verified signalling."
     if actor_dom == "State" and verified_count > contested_count:
-        return "Possible analytical reading: structured signalling rather than diffuse narrative contestation."
-    return "Possible analytical reading: routine signalling environment with no strong hidden-intent indicator in the visible data."
+        return "Possible analytical reading: controlled signalling environment with more structured information release."
+    return "No strong hidden-intent signal is visible within current public data patterns."
 
 def missing_but_expected(country_df, verified_count, contested_count):
     actors_present = set(country_df["actor"].astype(str).tolist())
     narratives_present = set(country_df["narrative_type"].astype(str).tolist())
 
     if contested_count > verified_count and "Official Statement" not in narratives_present:
-        return "Missing but expected: official clarification is absent despite contested reporting. This may indicate intentional silence, delay, or incomplete verification."
+        return "Missing but expected: official clarification is absent despite contested reporting."
     if "State" not in actors_present and len(country_df) > 0:
         return "Missing but expected: direct state-level signalling is limited in the visible dataset."
     return "No major missing-but-expected signal stands out under the current filtered view."
@@ -274,6 +262,65 @@ def decision_implication(high_risk_count, contested_count, verified_count):
     regional = "Regional actors may hedge verbally while avoiding deep commitment." if (contested_count >= 1 or high_risk_count >= 1) else "Limited regional spillover is visible under current conditions."
     return business, policy, regional
 
+def why_now_analysis(country_df):
+    if country_df.empty or country_df["timestamp_utc"].isna().all():
+        return "Temporal basis is insufficient for a strong why-now reading."
+
+    ts = country_df["timestamp_utc"].dropna().sort_values()
+    span_days = (ts.max() - ts.min()).days
+
+    if len(ts) >= 8 and span_days <= 5:
+        return "Recent clustering of signals suggests temporal concentration rather than isolated events."
+    elif len(ts) <= 3:
+        return "Signal presence appears sporadic, with no strong temporal clustering."
+    return "Moderate continuity suggests gradual narrative or structural development."
+
+def signal_momentum(country_df):
+    if country_df.empty or country_df["timestamp_utc"].isna().all():
+        return "Insufficient temporal evidence"
+
+    ts = country_df["timestamp_utc"].dropna().sort_values()
+    total = len(ts)
+    split_index = max(1, int(total * 0.7))
+    recent_count = total - split_index
+    earlier_count = split_index
+
+    if recent_count > earlier_count * 0.6:
+        return "High signal density over recent window"
+    elif recent_count > earlier_count * 0.3:
+        return "Moderate temporal spread"
+    return "Low recent concentration"
+
+def anomaly_flag(high_risk_count, contested_count):
+    if high_risk_count >= 2 and contested_count >= 2:
+        return "Potential anomaly: simultaneous rise in risk and contested signals"
+    return "No strong anomaly detected"
+
+def apply_playback_window(df, enable_playback=True):
+    """
+    Makes the dashboard look alive 24/7 even on synthetic/static data.
+    It reveals records progressively based on current UTC time.
+    """
+    if df.empty or "timestamp_utc" not in df.columns or df["timestamp_utc"].isna().all():
+        return df, None
+
+    df = df.sort_values("timestamp_utc").reset_index(drop=True)
+
+    if not enable_playback:
+        latest_time = df["timestamp_utc"].max()
+        return df, latest_time
+
+    unique_times = sorted(df["timestamp_utc"].dropna().unique())
+    if not unique_times:
+        return df, None
+
+    step = int(datetime.now(timezone.utc).timestamp() // 15)  # move every 15 sec
+    idx = step % len(unique_times)
+    live_cutoff = unique_times[idx]
+
+    visible_df = df[df["timestamp_utc"] <= live_cutoff].copy()
+    return visible_df, live_cutoff
+
 # --------------------------------------------------
 # SIDEBAR / CONTROLS
 # --------------------------------------------------
@@ -283,29 +330,36 @@ with st.sidebar:
     remote_csv_url = st.text_input(
         "Optional remote CSV URL",
         value="",
-        help="Paste a public CSV URL (e.g., GitHub raw CSV or published Google Sheet CSV). If unavailable, the app will automatically use the local backup CSV."
+        help="Paste a public CSV URL. If unavailable, the app uses the local backup CSV."
     )
 
-    if st.button("Refresh data"):
+    live_mode = st.toggle("Enable 24/7 playback mode", value=True)
+    refresh_seconds = st.selectbox("Auto-refresh interval (seconds)", [5, 10, 15, 30, 60], index=2)
+
+    # Auto refresh
+    st_autorefresh(interval=refresh_seconds * 1000, key="live_refresh")
+
+    if st.button("Refresh data now"):
         st.cache_data.clear()
 
-    df, source_used = load_data(remote_csv_url)
+    raw_df, source_used = load_data(remote_csv_url)
+    df, live_cutoff = apply_playback_window(raw_df, enable_playback=live_mode)
 
     selected_country = st.selectbox(
         "Select one country for deep analysis",
-        sorted(df["country"].unique())
+        sorted(df["country"].dropna().unique())
     )
 
     categories = st.multiselect(
         "Filter category",
-        sorted(df["category"].unique()),
-        default=sorted(df["category"].unique())
+        sorted(df["category"].dropna().unique()),
+        default=sorted(df["category"].dropna().unique())
     )
 
     signals = st.multiselect(
         "Filter signal level",
-        sorted(df["signal_level"].unique()),
-        default=sorted(df["signal_level"].unique())
+        sorted(df["signal_level"].dropna().unique()),
+        default=sorted(df["signal_level"].dropna().unique())
     )
 
 # --------------------------------------------------
@@ -327,7 +381,7 @@ country_df = filtered[filtered["country"] == selected_country].copy()
 # --------------------------------------------------
 # HEADER
 # --------------------------------------------------
-st.title("Strategic Signal Observatory v3.0")
+st.title("Strategic Signal Observatory v3.1")
 st.markdown(
     '<div class="researcher-line"><strong>Lead Researcher:</strong> MOHD KHAIRUL RIDHUAN BIN MOHD FADZIL</div>',
     unsafe_allow_html=True
@@ -339,6 +393,8 @@ st.markdown(
 <div class="meta-line"><strong>Data source:</strong> {source_used}</div>
 <div class="meta-line"><strong>UTC fetch time:</strong> {utc_now.strftime("%Y-%m-%d %H:%M:%S %Z")}</div>
 <div class="meta-line"><strong>Local fetch time:</strong> {local_now.strftime("%Y-%m-%d %H:%M:%S %Z")}</div>
+<div class="meta-line"><strong>Playback mode:</strong> {"On" if live_mode else "Off"}</div>
+<div class="meta-line"><strong>Visible feed cutoff:</strong> {str(live_cutoff) if live_cutoff is not None else "Full dataset"}</div>
 """,
     unsafe_allow_html=True
 )
@@ -364,12 +420,16 @@ dom_narrative = dominant_narrative(country_df)
 actor_dom = actor_dominance(country_df)
 sq_score, sq_label = signal_quality_index(verified_count, contested_count)
 np_score, np_label = narrative_pressure_index(contested_count, event_count)
-hidden_intent_text = possible_hidden_intent(
-    verified_count, contested_count, high_risk_count, actor_dom, dom_narrative
+confidence_text = intelligence_confidence(sq_score)
+hidden_intent_text = possible_hidden_intent_advanced(
+    verified_count, contested_count, actor_dom, dom_narrative
 )
 missing_expected_text = missing_but_expected(country_df, verified_count, contested_count)
 scenarios, likely_scenario = build_scenario_probabilities(high_risk_count, contested_count, verified_count)
 business_imp, policy_imp, regional_imp = decision_implication(high_risk_count, contested_count, verified_count)
+why_now_text = why_now_analysis(country_df)
+momentum_text = signal_momentum(country_df)
+anomaly_text = anomaly_flag(high_risk_count, contested_count)
 
 # --------------------------------------------------
 # EXECUTIVE BRIEF
@@ -416,6 +476,8 @@ st.markdown(
 
 **Primary interpretation:** {pattern_text}
 
+**Why now:** {why_now_text}
+
 **Immediate watchpoint:** {watch_next}
 """
 )
@@ -424,24 +486,26 @@ st.markdown(
 # ANALYTICAL INDICES
 # --------------------------------------------------
 st.subheader("Analytical Indices")
+i1, i2, i3, i4 = st.columns(4)
 
-i1, i2, i3 = st.columns(3)
 with i1:
     st.metric("Signal Quality Index", sq_score)
-    st.caption(sq_label)
+    st.caption(f"{sq_label} | {confidence_text}")
 
 with i2:
     st.metric("Narrative Pressure Index", np_score)
     st.caption(np_label)
 
 with i3:
-    st.metric("Dominant Actor Weight", actor_dom)
+    st.metric("Dominant Actor", actor_dom)
+
+with i4:
+    st.metric("Signal Momentum", momentum_text)
 
 # --------------------------------------------------
 # COUNTRY INTELLIGENCE CARD
 # --------------------------------------------------
 st.subheader("Country Intelligence Card")
-
 c1, c2 = st.columns(2)
 
 with c1:
@@ -470,8 +534,8 @@ with c2:
         <div class="small-label">Missing but expected</div>
         <div class="value-box">{missing_expected_text}</div>
         <br>
-        <div class="small-label">Analytical caution</div>
-        <div class="value-box">Interpret visible patterns only. Do not infer hidden intent, classified action, or tactical certainty as fact.</div>
+        <div class="small-label">Anomaly flag</div>
+        <div class="value-box">{anomaly_text}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -506,7 +570,6 @@ with right_panel:
     st.subheader("Scenario Panel")
     for scenario_name, prob in scenarios.items():
         st.write(f"**{scenario_name} — {prob}%**")
-
     st.write("")
     st.write(f"**Most likely under current data:** {likely_scenario}")
 
@@ -514,10 +577,12 @@ with right_panel:
 # EVENT TABLE
 # --------------------------------------------------
 st.subheader("Country Event Table")
-display_cols = [
-    "date", "country", "actor", "category",
-    "signal_level", "narrative_type", "business_risk", "summary"
-]
+display_cols = [c for c in [
+    "timestamp_utc", "date", "country", "actor", "category",
+    "signal_level", "narrative_type", "business_risk",
+    "source_type", "confidence_score", "summary"
+] if c in country_df.columns]
+
 st.dataframe(country_df[display_cols], use_container_width=True)
 
 # --------------------------------------------------
@@ -537,6 +602,20 @@ with chart2:
     fig2 = px.bar(narrative_counts, x="narrative_type", y="count")
     st.plotly_chart(fig2, use_container_width=True)
 
+# NEW: live timeline chart
+st.subheader("Live Feed Timeline")
+timeline_df = (
+    country_df.dropna(subset=["timestamp_utc"])
+    .groupby("timestamp_utc")
+    .size()
+    .reset_index(name="event_count")
+)
+if not timeline_df.empty:
+    fig_timeline = px.line(timeline_df, x="timestamp_utc", y="event_count", markers=True)
+    st.plotly_chart(fig_timeline, use_container_width=True)
+else:
+    st.info("No timestamped records available for timeline view.")
+
 st.subheader("Regional Comparison")
 comparison_df = filtered.groupby("country").size().reset_index(name="event_count")
 fig3 = px.bar(comparison_df, x="country", y="event_count")
@@ -548,17 +627,11 @@ st.plotly_chart(fig3, use_container_width=True)
 st.subheader("What Most People Miss")
 
 if verified_count > contested_count and high_risk_count > 0:
-    missed_point = (
-        "The most important signal may not be the visible rhetoric itself, but the way verified reporting intersects with business-risk exposure."
-    )
+    missed_point = "The most important signal may not be the visible rhetoric itself, but the way verified reporting intersects with business-risk exposure."
 elif contested_count > verified_count:
-    missed_point = (
-        "The central issue may be ambiguity rather than volume. Contested claims can shape perception even when evidence remains incomplete."
-    )
+    missed_point = "The central issue may be ambiguity rather than volume. Contested claims can shape perception even when evidence remains incomplete."
 else:
-    missed_point = (
-        "The key analytical issue lies in the balance between credible signalling and narrative amplification, not in raw event count alone."
-    )
+    missed_point = "The key analytical issue lies in the balance between credible signalling and narrative amplification, not in raw event count alone."
 
 st.write(missed_point)
 
@@ -574,9 +647,13 @@ memo = f"""
 
 **Signal interpretation:** {pattern_text}
 
-**Signal quality:** {sq_score} ({sq_label})
+**Why now:** {why_now_text}
+
+**Signal quality:** {sq_score} ({sq_label}; {confidence_text})
 
 **Narrative pressure:** {np_score} ({np_label})
+
+**Signal momentum:** {momentum_text}
 
 **Risk interpretation:** {selected_country} shows {high_risk_count} high-risk indicator(s). This may imply sensitivity in business conditions, policy positioning, diplomatic signalling, or regional confidence.
 
@@ -587,6 +664,8 @@ memo = f"""
 **Possible hidden intent (analytical reading only):** {hidden_intent_text}
 
 **Missing but expected:** {missing_expected_text}
+
+**Anomaly flag:** {anomaly_text}
 
 **ASEAN outlook:** {asean_text}
 
@@ -605,6 +684,7 @@ memo = f"""
 **UTC fetch time:** {utc_now.strftime("%Y-%m-%d %H:%M:%S %Z")}
 **Local fetch time:** {local_now.strftime("%Y-%m-%d %H:%M:%S %Z")}
 **Data source used:** {source_used}
+**Visible feed cutoff:** {str(live_cutoff) if live_cutoff is not None else "Full dataset"}
 
 **For educational and analytical purposes only.**
 """

@@ -1,0 +1,7 @@
+date,country,actor,category,signal_level,narrative_type,business_risk,summary
+2026-03-28,Iran,State,Military,Verified,Official Statement,High,Escalatory statement with regional implications
+2026-03-29,Israel,State,Cyber,Contested,Media Claim,Medium,Unverified report of cyber disruption
+2026-03-30,USA,State,Diplomatic,Verified,Official Statement,Medium,Security briefing and deterrence messaging
+2026-03-31,Lebanon,Proxy,Proxy Activity,Contested,Social Media,High,Cross-border claim with unclear attribution
+2026-04-01,Qatar,Regional Actor,Diplomatic,Verified,Official Statement,Low,Mediation-related diplomatic activity
+2026-04-02,Saudi Arabia,Regional Actor,Energy,Verified,Market Signal,High,Market sensitivity around energy transit
